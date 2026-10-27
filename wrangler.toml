@@ -1,7 +1,7 @@
 name = "assignment-notebook"
 main = "src/worker.js"
 compatibility_date = "2025-10-01"
-routes = [{ pattern = "asigment.yakton.net", custom_domain = true }]
+# Attach asigment.yakton.net in the dashboard: Worker > Settings > Domains & Routes > Add > Custom domain
 
 [assets]
 directory = "./public"
