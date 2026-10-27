@@ -43,16 +43,21 @@ async function api(req, env, p) {
   const token = (req.headers.get("authorization") || "").replace("Bearer ", "");
   const s = token && (await env.DB.get("session:" + token, "json"));
   if (!s) return J({ error: "Not signed in" }, 401);
-  if (s.role === "student" && !(await env.DB.get("user:" + s.username))) return J({ error: "Account removed" }, 401);
+  let u = null;
+  if (s.role === "student") { u = await env.DB.get("user:" + s.username, "json"); if (!u) return J({ error: "Account removed" }, 401); }
 
-  if (p === "/api/me") return J(s);
-  if (p === "/api/templates" && req.method === "GET") return J((await env.DB.get("templates", "json")) || []);
+  if (p === "/api/me") return J(u ? { ...s, name: u.name, grade: u.grade || "" } : s);
+  if (p === "/api/templates" && req.method === "GET") {
+    const all = (await env.DB.get("templates", "json")) || [];
+    return J(u && u.grade ? all.filter(t => !t.grades?.length || t.grades.includes(+u.grade)) : all);
+  }
   if (s.role === "admin" && p.startsWith("/api/admin/templates")) {
     const list = (await env.DB.get("templates", "json")) || [];
     if (req.method === "POST") {
       const teacher = String(body.teacher || "").trim().slice(0, 60), className = String(body.className || "").trim().slice(0, 60);
       if (!teacher || !className) return J({ error: "Enter both a teacher and a class" }, 400);
-      list.push({ id: rand().slice(0, 10), teacher, className });
+      const grades = [...new Set((Array.isArray(body.grades) ? body.grades : []).map(Number).filter(g => g >= 1 && g <= 12))];
+      list.push({ id: rand().slice(0, 10), teacher, className, grades });
       await env.DB.put("templates", JSON.stringify(list.slice(-500)));
       return J({ ok: 1 });
     }
@@ -70,7 +75,8 @@ async function api(req, env, p) {
     if (req.method === "PUT") {
       const d = {
         classes: Array.isArray(body.classes) ? body.classes.slice(0, 100) : [],
-        assignments: Array.isArray(body.assignments) ? body.assignments.slice(0, 2000) : []
+        assignments: Array.isArray(body.assignments) ? body.assignments.slice(0, 2000) : [],
+        settings: { hpd: Math.min(12, Math.max(0.5, +body.settings?.hpd || 3)) }
       };
       if (JSON.stringify(d).length > 800000) return J({ error: "Too much data" }, 413);
       await env.DB.put(k, JSON.stringify(d));
@@ -78,10 +84,23 @@ async function api(req, env, p) {
     }
   }
 
+  if (s.role === "admin" && p === "/api/admin/grade" && req.method === "POST") {
+    const l = await env.DB.list({ prefix: "user:" });
+    for (const k of l.keys) {
+      const x = await env.DB.get(k.name, "json");
+      if (body.all ? !x.grade : x.username !== body.username) continue;
+      const g = body.all ? Math.min(13, +x.grade + 1) : Math.max(0, Math.min(13, +body.grade || 0));
+      x.grade = g ? String(g) : "";
+      await env.DB.put(k.name, JSON.stringify(x));
+      if (body.clear) await env.DB.delete("data:" + x.username);
+    }
+    return J({ ok: 1 });
+  }
+
   if (s.role === "admin" && p.startsWith("/api/admin/students")) {
     if (req.method === "GET") {
       const l = await env.DB.list({ prefix: "user:" }), out = [];
-      for (const k of l.keys) { const u = await env.DB.get(k.name, "json"); out.push({ username: u.username, name: u.name }); }
+      for (const k of l.keys) { const u = await env.DB.get(k.name, "json"); out.push({ username: u.username, name: u.name, grade: u.grade || "" }); }
       return J(out);
     }
     if (req.method === "POST") {
@@ -90,7 +109,7 @@ async function api(req, env, p) {
       const old = await env.DB.get("user:" + un, "json");
       if (old && !body.reset) return J({ error: "That username already exists" }, 409);
       const salt = rand();
-      await env.DB.put("user:" + un, JSON.stringify({ username: un, name: String(body.name || old?.name || un).slice(0, 60), salt, hash: await hashPw(pw, salt) }));
+      await env.DB.put("user:" + un, JSON.stringify({ username: un, name: String(body.name || old?.name || un).slice(0, 60), salt, hash: await hashPw(pw, salt), grade: String(body.grade ?? old?.grade ?? "").replace(/\D/g, "").slice(0, 2) }));
       return J({ ok: 1 });
     }
     if (req.method === "DELETE") {

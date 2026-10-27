@@ -24,3 +24,8 @@ ul{list-style:none;margin:0;padding:0}
 .grow{flex:1;min-width:0}.sw{display:inline-block;width:10px;height:10px;margin-right:4px;vertical-align:baseline}
 .row{display:flex;gap:8px}.cls{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px dotted var(--line)}
 label.meta{display:block;margin:2px 0}
+.item{flex-wrap:wrap}.tag{font-size:11px;border:1px solid var(--ink);padding:0 5px;text-transform:uppercase;letter-spacing:.05em;vertical-align:middle}
+.stats{display:flex;flex-wrap:wrap;gap:6px 22px;margin-bottom:20px;color:var(--mut);font-size:14px}.stats b{color:var(--ink);font:600 20px Georgia,serif;margin-right:3px}
+.chips{margin-bottom:16px}button.mini.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.prog{width:auto;padding:4px;margin:0;font-size:13px}.cls select{width:auto;margin:0 6px;padding:3px}
+.grades{display:flex;flex-wrap:wrap;gap:4px 10px;margin:4px 0 8px}.grades label{font-size:14px}.grades input{width:auto;margin:0 3px 0 0}
