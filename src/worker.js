@@ -46,6 +46,22 @@ async function api(req, env, p) {
   if (s.role === "student" && !(await env.DB.get("user:" + s.username))) return J({ error: "Account removed" }, 401);
 
   if (p === "/api/me") return J(s);
+  if (p === "/api/templates" && req.method === "GET") return J((await env.DB.get("templates", "json")) || []);
+  if (s.role === "admin" && p.startsWith("/api/admin/templates")) {
+    const list = (await env.DB.get("templates", "json")) || [];
+    if (req.method === "POST") {
+      const teacher = String(body.teacher || "").trim().slice(0, 60), className = String(body.className || "").trim().slice(0, 60);
+      if (!teacher || !className) return J({ error: "Enter both a teacher and a class" }, 400);
+      list.push({ id: rand().slice(0, 10), teacher, className });
+      await env.DB.put("templates", JSON.stringify(list.slice(-500)));
+      return J({ ok: 1 });
+    }
+    if (req.method === "DELETE") {
+      const id = p.split("/").pop();
+      await env.DB.put("templates", JSON.stringify(list.filter(t => t.id !== id)));
+      return J({ ok: 1 });
+    }
+  }
   if (p === "/api/logout") { await env.DB.delete("session:" + token); return J({ ok: 1 }); }
 
   if (p === "/api/data" && s.role === "student") {
