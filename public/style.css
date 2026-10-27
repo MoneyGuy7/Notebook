@@ -29,3 +29,8 @@ label.meta{display:block;margin:2px 0}
 .chips{margin-bottom:16px}button.mini.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}
 .prog{width:auto;padding:4px;margin:0;font-size:13px}.cls select{width:auto;margin:0 6px;padding:3px}
 .grades{display:flex;flex-wrap:wrap;gap:4px 10px;margin:4px 0 8px}.grades label{font-size:14px}.grades input{width:auto;margin:0 3px 0 0}
+.grades{gap:6px}.pill{position:relative}.pill input{position:absolute;opacity:0;width:0;height:0;margin:0}
+.pill span{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border:1px solid var(--line);background:var(--card);cursor:pointer;font-size:14px;user-select:none}
+.pill:hover span{border-color:var(--ink)}.pill input:checked+span{background:var(--ink);color:var(--paper);border-color:var(--ink);font-weight:600}
+.pill input:focus-visible+span{outline:2px solid var(--blue);outline-offset:2px}
+.tabs button{font-size:14px}

@@ -1,8 +1,8 @@
 const app = document.getElementById("app");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const uid = () => Math.random().toString(36).slice(2, 10), pad = n => String(n).padStart(2, "0");
-let token = localStorage.getItem("an_token"), me = null, mode = "student", msg = "", students = [], templates = [], editId = null, filter = "all", U = {};
-let data = { classes: [], assignments: [], settings: { hpd: 3 } };
+let token = localStorage.getItem("an_token"), me = null, mode = "student", msg = "", students = [], templates = [], editId = null, filter = "all", U = {}, teachers = [], tt = [], tdata = { templates: [], tasks: {} };
+let data = { classes: [], assignments: [], settings: { hpd: 3 }, tprog: {} };
 const TYPES = ["Homework", "Quiz", "Test", "Project"];
 const gName = g => +g === 13 ? "Graduated" : g ? "Grade " + g : "No grade";
 const gOpts = sel => `<option value="">No grade</option>` + Array.from({ length: 13 }, (_, i) => `<option value="${i + 1}"${+sel === i + 1 ? " selected" : ""}>${gName(i + 1)}</option>`).join("");
@@ -22,8 +22,9 @@ let timer;
 function save() { clearTimeout(timer); timer = setTimeout(() => api("data", "PUT", data).catch(e => { msg = e.message; render(); }), 400); }
 async function boot() {
   me = await api("me"); templates = await api("templates");
-  if (me.role === "admin") students = await api("admin/students");
-  else { const d = await api("data"); data = { classes: d.classes || [], assignments: d.assignments || [], settings: { hpd: +d.settings?.hpd || 3 } }; }
+  if (me.role === "admin") { students = await api("admin/students"); teachers = await api("admin/teachers"); }
+  else if (me.role === "teacher") tdata = await api("teacher/tasks");
+  else { const d = await api("data"); data = { classes: d.classes || [], assignments: d.assignments || [], settings: { hpd: +d.settings?.hpd || 3 }, tprog: d.tprog || {} }; await loadTT(); }
 }
 
 const fmtMin = m => m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? " " + (m % 60) + "m" : ""}` : `${m}m`;
@@ -62,25 +63,25 @@ function item(a) {
   const when = new Date(a.due).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   const sb = u.startBy ? (u.startBy <= Date.now() ? " · start now" : " · start by " + new Date(u.startBy).toLocaleDateString([], { weekday: "short" })) : "";
   return `<li class="item ${u.cls}"><div class="lvl" title="${esc(u.why)}">${u.label}<small>${u.score}/100</small></div>
-  <div class="grow"><b>${esc(a.title)}</b>${a.type && a.type !== "Homework" ? ` <span class="tag">${a.type}</span>` : ""}<div class="meta"><i class="sw" style="background:${col(a.classId)}"></i>${esc(c ? c.name + (c.teacher ? " (" + c.teacher + ")" : "") : "No class")} · ${rel(a.due)}, ${when} · ${fmtMin(Math.round(a.est * (1 - p / 100)))} left${sb}</div></div>
+  <div class="grow"><b>${esc(a.title)}</b>${a.teacher ? ' <span class="tag">Teacher</span>' : ""}${a.type && a.type !== "Homework" ? ` <span class="tag">${a.type}</span>` : ""}<div class="meta"><i class="sw" style="background:${col(a.classId)}"></i>${esc(c ? c.name + (c.teacher ? " (" + c.teacher + ")" : "") : "No class")} · ${rel(a.due)}, ${when} · ${fmtMin(Math.round(a.est * (1 - p / 100)))} left${sb}</div>${a.notes ? `<div class="meta">${esc(a.notes)}</div>` : ""}</div>
   <select class="prog" data-ch="prog" data-id="${a.id}" title="Progress">${[0, 25, 50, 75].map(v => `<option value="${v}"${v === p ? " selected" : ""}>${v}%</option>`).join("")}</select>
-  <button data-act="done" data-id="${a.id}">Done</button><button class="ghost" data-act="edit" data-id="${a.id}">Edit</button><button class="ghost" data-act="del" data-id="${a.id}">Delete</button></li>`;
+  <button data-act="done" data-id="${a.id}">Done</button>${a.teacher ? "" : `<button class="ghost" data-act="edit" data-id="${a.id}">Edit</button><button class="ghost" data-act="del" data-id="${a.id}">Delete</button>`}</li>`;
 }
 
 function renderLogin() {
   app.innerHTML = `<main class="login"><h1>Assignment Notebook</h1><p class="sub">Know what to do first.</p>
-  <div class="tabs"><button data-act="mode" data-id="student" class="${mode === "student" ? "on" : ""}">Student</button><button data-act="mode" data-id="admin" class="${mode === "admin" ? "on" : ""}">Admin</button></div>
-  <form id="lf">${mode === "student" ? '<input name="username" placeholder="Username" autocomplete="username" autocapitalize="none" required>' : ""}
+  <div class="tabs"><button data-act="mode" data-id="student" class="${mode === "student" ? "on" : ""}">Student</button><button data-act="mode" data-id="teacher" class="${mode === "teacher" ? "on" : ""}">Teacher</button><button data-act="mode" data-id="admin" class="${mode === "admin" ? "on" : ""}">Admin</button></div>
+  <form id="lf">${mode !== "admin" ? '<input name="username" placeholder="Username" autocomplete="username" autocapitalize="none" required>' : ""}
   <input name="password" type="password" placeholder="${mode === "admin" ? "Admin password" : "Password"}" autocomplete="current-password" required>
   <button class="primary" style="width:100%">Sign in</button></form><p class="err">${esc(msg)}</p>
   <p class="hint">Accounts are made by your admin.</p></main>`;
 }
 
 function renderStudent() {
-  const all = data.assignments.filter(a => !a.done); U = scoreAll(all);
+  const allA = [...data.assignments, ...tAssign()], all = allA.filter(a => !a.done); U = scoreAll(all);
   const sorted = [...all].sort((a, b) => U[b.id].score - U[a.id].score || new Date(a.due) - new Date(b.due));
   const shown = filter === "all" ? sorted : sorted.filter(a => a.classId === filter), [first, ...rest] = shown;
-  const done = data.assignments.filter(a => a.done), ed = data.assignments.find(a => a.id === editId);
+  const done = allA.filter(a => a.done), ed = data.assignments.find(a => a.id === editId);
   const work = all.reduce((s, a) => s + a.est * (1 - (a.progress || 0) / 100), 0), over = all.filter(a => U[a.id].label === "Overdue").length;
   const week = all.filter(a => { const h = (new Date(a.due) - Date.now()) / 36e5; return h > 0 && h < 168; }).length;
   const have = t => data.classes.some(c => c.name.toLowerCase() === t.className.toLowerCase() && (c.teacher || "").toLowerCase() === t.teacher.toLowerCase());
@@ -113,26 +114,58 @@ function renderStudent() {
 function renderAdmin() {
   const list = [...students].sort((a, b) => (+a.grade || 99) - (+b.grade || 99) || a.name.localeCompare(b.name));
   app.innerHTML = `<header><b>Admin</b><button data-act="out">Sign out</button></header><div class="wrap" style="grid-template-columns:1fr 1fr">
-  <div class="card"><h3>Students (${students.length})</h3><form id="sf"><input name="name" placeholder="Student's name" required><input name="username" placeholder="Username (letters/numbers)" autocapitalize="none" required>
+  <div><div class="card"><h3>Students (${students.length})</h3><form id="sf"><input name="name" placeholder="Student's name" required><input name="username" placeholder="Username (letters/numbers)" autocapitalize="none" required>
   <input name="password" placeholder="Password (min 4)" required><select name="grade">${gOpts("")}</select><button class="primary" style="width:100%">Create account</button></form><p class="err">${esc(msg)}</p>
   ${students.length ? '<button class="mini" data-act="promoteAll">Move everyone up a grade</button>' : ""}
   ${list.map(s => `<div class="cls"><span>${esc(s.name)} <span class="meta">@${esc(s.username)}</span></span><span><select data-ch="sgrade" data-id="${esc(s.username)}">${gOpts(s.grade)}</select><button class="ghost" data-act="promote" data-id="${esc(s.username)}">move up</button><button class="ghost" data-act="reset" data-id="${esc(s.username)}">reset pw</button><button class="ghost" data-act="rm" data-id="${esc(s.username)}">delete</button></span></div>`).join("")}</div>
-  <div class="card"><h3>Class templates (${templates.length})</h3><p class="meta">Students only see templates for their grade. Leave all grades unchecked to show a template to everyone, or check several for classes like PE.</p>
-  <form id="tf"><input name="className" placeholder="Class (e.g. Algebra 2)" required><input name="teacher" placeholder="Teacher (e.g. Ms. Lee)" required>
-  <div class="grades">${Array.from({ length: 12 }, (_, i) => `<label><input type="checkbox" name="g" value="${i + 1}">${i + 1}</label>`).join("")}</div>
+  <div class="card"><h3>Teachers (${teachers.length})</h3><p class="meta">Teachers sign in on the Teacher tab and assign homework to classes that have a template with their name.</p>
+  <form data-form="tcf"><input name="name" placeholder="Teacher's name (e.g. Ms. Lee)" required><input name="username" placeholder="Username (letters/numbers)" autocapitalize="none" required><input name="password" placeholder="Password (min 4)" required><button class="primary" style="width:100%">Create teacher</button></form>
+  ${teachers.map(t => `<div class="cls"><span>${esc(t.name)} <span class="meta">@${esc(t.username)}</span></span><span><button class="ghost" data-act="treset" data-id="${esc(t.username)}">reset pw</button><button class="ghost" data-act="trm" data-id="${esc(t.username)}">delete</button></span></div>`).join("")}</div></div>
+  <div><div class="card"><h3>Class templates (${templates.length})</h3><p class="meta">Students only see templates for their grade. Leave all grades unchecked to show a template to everyone, or check several for classes like PE.</p>
+  <form id="tf"><input name="className" placeholder="Class (e.g. Algebra 2)" required><input name="teacher" list="tn" placeholder="Teacher (pick an account or type a name)" autocomplete="off" required><datalist id="tn">${teachers.map(t => `<option value="${esc(t.name)}">`).join("")}</datalist>
+  <div class="grades">${Array.from({ length: 12 }, (_, i) => `<label class="pill"><input type="checkbox" name="g" value="${i + 1}"><span>${i + 1}</span></label>`).join("")}</div>
   <div><button type="button" class="mini" data-act="gset" data-id="6-8">6–8</button><button type="button" class="mini" data-act="gset" data-id="9-12">9–12</button><button type="button" class="mini" data-act="gset" data-id="1-12">All</button><button type="button" class="mini" data-act="gset" data-id="none">Clear</button></div>
   <button class="primary" style="width:100%">Add template</button></form>
-  ${templates.map(t => `<div class="cls"><span>${esc(t.className)} <span class="meta">${esc(t.teacher)} · ${gl(t.grades)}</span></span><button class="ghost" data-act="rmt" data-id="${t.id}">delete</button></div>`).join("")}</div></div>`;
+  ${templates.map(t => `<div class="cls"><span>${esc(t.className)} <span class="meta">${esc(t.teacher)} · ${gl(t.grades)}</span></span><button class="ghost" data-act="rmt" data-id="${t.id}">delete</button></div>`).join("")}</div></div></div>`;
 }
 
-function render() { if (!token || !me) return renderLogin(); me.role === "admin" ? renderAdmin() : renderStudent(); }
+const loadTT = () => api("class-tasks").then(r => { tt = r; }).catch(() => {});
+// Homework assigned by teachers shows up for any student whose class matches the template's class + teacher
+function tAssign() {
+  const out = [];
+  for (const c of data.classes) for (const k of tt) {
+    if (k.className.toLowerCase() === c.name.toLowerCase() && (k.teacher || "").toLowerCase() === (c.teacher || "").toLowerCase()) {
+      const p = data.tprog[k.id] || {};
+      out.push({ id: "t:" + k.id, classId: c.id, title: k.title, type: k.type, due: k.due, est: k.est, notes: k.notes, teacher: true, done: !!p.done, progress: p.progress || 0 });
+    }
+  }
+  return out;
+}
+function setA(id, patch) {
+  if (id.startsWith("t:")) { const k = id.slice(2); data.tprog[k] = { ...(data.tprog[k] || {}), ...patch }; }
+  else Object.assign(data.assignments.find(a => a.id === id), patch);
+  save();
+}
+function renderTeacher() {
+  const due = '<div><button type="button" class="mini" data-act="due" data-id="0">Today</button><button type="button" class="mini" data-act="due" data-id="1">Tomorrow</button><button type="button" class="mini" data-act="due" data-id="7">In a week</button></div>';
+  app.innerHTML = `<header><b>${esc(me.name)} · Teacher</b><button data-act="out">Sign out</button></header><div class="wrap" style="grid-template-columns:1fr;max-width:680px">
+  ${tdata.templates.length ? tdata.templates.map(t => `<div class="card"><h3>${esc(t.className)} <span class="meta">${gl(t.grades)}</span></h3>
+    <form data-form="th"><input type="hidden" name="tid" value="${t.id}"><input name="title" placeholder="Assignment" required>
+    <div class="row"><select name="type">${TYPES.map(x => `<option>${x}</option>`).join("")}</select><input name="due" type="datetime-local" required></div>${due}
+    <label class="meta">Estimated time (hours, minutes)</label><div class="row"><input name="h" type="number" min="0" max="99" value="0"><input name="m" type="number" min="0" max="59" value="30"></div>
+    <input name="notes" placeholder="Notes for students (optional)"><button class="primary" style="width:100%">Assign to class</button></form>
+    <ul>${(tdata.tasks[t.id] || []).sort((a, b) => new Date(a.due) - new Date(b.due)).map(k => `<li class="item chill"><div class="grow"><b>${esc(k.title)}</b>${k.type !== "Homework" ? ` <span class="tag">${k.type}</span>` : ""}<div class="meta">due ${new Date(k.due).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} · about ${fmtMin(k.est)}${k.notes ? " · " + esc(k.notes) : ""}</div></div><button class="ghost" data-act="tdel" data-id="${t.id}/${k.id}">Delete</button></li>`).join("")}</ul></div>`).join("") : '<div class="card"><p class="meta">You have no classes yet. Ask the admin to add a class template with your name.</p></div>'}
+  <p class="err">${esc(msg)}</p></div>`;
+}
+
+function render() { if (!token || !me) return renderLogin(); me.role === "admin" ? renderAdmin() : me.role === "teacher" ? renderTeacher() : renderStudent(); }
 
 app.addEventListener("submit", async e => {
   e.preventDefault();
   const f = e.target, fd = new FormData(f), v = Object.fromEntries(fd); msg = "";
   try {
     if (f.id === "lf") {
-      const r = await api("login", "POST", mode === "admin" ? { admin: 1, password: v.password } : v);
+      const r = await api("login", "POST", mode === "admin" ? { admin: 1, password: v.password } : { role: mode, ...v });
       token = r.token; localStorage.setItem("an_token", token); await boot();
     } else if (f.id === "cf") { data.classes.push({ id: uid(), name: v.name.trim(), teacher: v.teacher.trim() }); save(); }
     else if (f.id === "hf") {
@@ -142,6 +175,8 @@ app.addEventListener("submit", async e => {
       save();
     } else if (f.id === "sf") { await api("admin/students", "POST", v); students = await api("admin/students"); }
     else if (f.id === "tf") { await api("admin/templates", "POST", { className: v.className, teacher: v.teacher, grades: fd.getAll("g") }); templates = await api("templates"); }
+    else if (f.dataset.form === "th") { await api("teacher/tasks", "POST", { templateId: v.tid, title: v.title, type: v.type, due: new Date(v.due).toISOString(), est: (+v.h || 0) * 60 + (+v.m || 0), notes: v.notes }); tdata = await api("teacher/tasks"); }
+    else if (f.dataset.form === "tcf") { await api("admin/teachers", "POST", v); teachers = await api("admin/teachers"); }
   } catch (err) { msg = err.message; }
   render();
 });
@@ -158,7 +193,7 @@ app.addEventListener("input", e => {
 app.addEventListener("change", async e => {
   const t = e.target, ch = t.dataset.ch; if (!ch) return;
   try {
-    if (ch === "prog") { data.assignments.find(a => a.id === t.dataset.id).progress = +t.value; save(); }
+    if (ch === "prog") setA(t.dataset.id, { progress: +t.value });
     else if (ch === "hpd") { data.settings.hpd = Math.min(12, Math.max(0.5, +t.value || 3)); save(); }
     else if (ch === "sgrade") { await api("admin/grade", "POST", { username: t.dataset.id, grade: t.value }); students = await api("admin/students"); }
   } catch (err) { msg = err.message; }
@@ -171,7 +206,7 @@ app.addEventListener("click", async e => {
   const { act, id } = b.dataset, A = data.assignments;
   try {
     if (act === "due") {
-      const el = document.querySelector("#hf [name=due]"), d = new Date(); d.setDate(d.getDate() + +id);
+      const el = b.closest("form").querySelector("[name=due]"), d = new Date(); d.setDate(d.getDate() + +id);
       el.value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${el.value.slice(11) || "23:59"}`; return;
     }
     if (act === "gset") {
@@ -183,7 +218,7 @@ app.addEventListener("click", async e => {
     else if (act === "filter") filter = id;
     else if (act === "edit") { editId = id; render(); document.getElementById("hf")?.scrollIntoView({ behavior: "smooth" }); return; }
     else if (act === "cancel") editId = null;
-    else if (act === "done" || act === "undo") { A.find(x => x.id === id).done = act === "done"; save(); }
+    else if (act === "done" || act === "undo") setA(id, { done: act === "done" });
     else if (act === "del") { data.assignments = A.filter(x => x.id !== id); save(); }
     else if (act === "clear") { data.assignments = A.filter(x => !x.done); save(); }
     else if (act === "tpl") { const t = templates.find(x => x.id === id); data.classes.push({ id: uid(), name: t.className, teacher: t.teacher }); save(); }
@@ -202,11 +237,18 @@ app.addEventListener("click", async e => {
     } else if (act === "promoteAll") {
       if (!confirm("Move every student (who has a grade) up one grade?")) return;
       await api("admin/grade", "POST", { all: true, clear: askClear() }); students = await api("admin/students");
+    } else if (act === "treset") {
+      const p = prompt("New password for " + id + " (min 4 characters):"); if (!p) return;
+      await api("admin/teachers", "POST", { username: id, password: p, reset: 1 }); alert("Password changed.");
+    } else if (act === "trm") {
+      if (!confirm("Delete teacher account " + id + "?")) return;
+      await api("admin/teachers/" + encodeURIComponent(id), "DELETE"); teachers = await api("admin/teachers");
+    } else if (act === "tdel") { await api("teacher/tasks/" + id, "DELETE"); tdata = await api("teacher/tasks");
     } else if (act === "rmt") { await api("admin/templates/" + id, "DELETE"); templates = await api("templates"); }
   } catch (err) { msg = err.message; }
   render();
 });
 
-document.addEventListener("visibilitychange", () => { if (!document.hidden && me && !document.querySelector("input:focus")) render(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && me && !document.querySelector("input:focus")) (me.role === "student" ? loadTT() : Promise.resolve()).then(render); });
 
 if (token) boot().then(render).catch(() => { token = null; render(); }); else render();

@@ -28,8 +28,9 @@ async function api(req, env, p) {
     if (body.admin) {
       if (env.ADMIN_PASSWORD && (await sha(pw)) === (await sha(env.ADMIN_PASSWORD))) sess = { role: "admin" };
     } else {
-      const u = await env.DB.get("user:" + String(body.username || "").toLowerCase().trim(), "json");
-      if (u && (await hashPw(pw, u.salt)) === u.hash) sess = { role: "student", username: u.username, name: u.name };
+      const tr = body.role === "teacher";
+      const x = await env.DB.get((tr ? "teacher:" : "user:") + String(body.username || "").toLowerCase().trim(), "json");
+      if (x && (await hashPw(pw, x.salt)) === x.hash) sess = { role: tr ? "teacher" : "student", username: x.username, name: x.name };
     }
     if (!sess) {
       await env.DB.put(fk, String(fails + 1), { expirationTtl: 900 });
@@ -44,12 +45,60 @@ async function api(req, env, p) {
   const s = token && (await env.DB.get("session:" + token, "json"));
   if (!s) return J({ error: "Not signed in" }, 401);
   let u = null;
-  if (s.role === "student") { u = await env.DB.get("user:" + s.username, "json"); if (!u) return J({ error: "Account removed" }, 401); }
+  if (s.role === "student" || s.role === "teacher") { u = await env.DB.get((s.role === "teacher" ? "teacher:" : "user:") + s.username, "json"); if (!u) return J({ error: "Account removed" }, 401); }
 
   if (p === "/api/me") return J(u ? { ...s, name: u.name, grade: u.grade || "" } : s);
   if (p === "/api/templates" && req.method === "GET") {
     const all = (await env.DB.get("templates", "json")) || [];
     return J(u && u.grade ? all.filter(t => !t.grades?.length || t.grades.includes(+u.grade)) : all);
+  }
+  if (p === "/api/class-tasks" && s.role === "student") {
+    const all = (await env.DB.get("templates", "json")) || [], out = [], cut = Date.now() - 14 * 864e5;
+    for (const t of all.filter(t => !u.grade || !t.grades?.length || t.grades.includes(+u.grade))) {
+      for (const k of (await env.DB.get("tasks:" + t.id, "json")) || []) if (new Date(k.due) > cut) out.push({ ...k, className: t.className, teacher: t.teacher });
+    }
+    return J(out);
+  }
+  if (s.role === "teacher" && p.startsWith("/api/teacher/tasks")) {
+    const mine = ((await env.DB.get("templates", "json")) || []).filter(t => t.teacher.toLowerCase() === u.name.toLowerCase());
+    if (req.method === "GET") {
+      const tasks = {};
+      for (const t of mine) tasks[t.id] = (await env.DB.get("tasks:" + t.id, "json")) || [];
+      return J({ templates: mine, tasks });
+    }
+    if (req.method === "POST") {
+      const t = mine.find(x => x.id === body.templateId);
+      if (!t) return J({ error: "That isn't your class" }, 403);
+      const title = String(body.title || "").trim().slice(0, 120), due = new Date(body.due);
+      if (!title || isNaN(due)) return J({ error: "Enter a title and a due date" }, 400);
+      const list = (await env.DB.get("tasks:" + t.id, "json")) || [];
+      list.push({ id: rand().slice(0, 10), title, type: ["Homework", "Quiz", "Test", "Project"].includes(body.type) ? body.type : "Homework", due: due.toISOString(), est: Math.min(6000, Math.max(5, +body.est || 30)), notes: String(body.notes || "").slice(0, 300) });
+      await env.DB.put("tasks:" + t.id, JSON.stringify(list.slice(-200)));
+      return J({ ok: 1 });
+    }
+    if (req.method === "DELETE") {
+      const [tid, id] = p.split("/").slice(-2);
+      if (!mine.some(x => x.id === tid)) return J({ error: "That isn't your class" }, 403);
+      await env.DB.put("tasks:" + tid, JSON.stringify(((await env.DB.get("tasks:" + tid, "json")) || []).filter(x => x.id !== id)));
+      return J({ ok: 1 });
+    }
+  }
+  if (s.role === "admin" && p.startsWith("/api/admin/teachers")) {
+    if (req.method === "GET") {
+      const l = await env.DB.list({ prefix: "teacher:" }), out = [];
+      for (const k of l.keys) { const x = await env.DB.get(k.name, "json"); out.push({ username: x.username, name: x.name }); }
+      return J(out);
+    }
+    if (req.method === "POST") {
+      const un = String(body.username || "").toLowerCase().trim(), pw = String(body.password || "");
+      if (!/^[a-z0-9_.-]{3,30}$/.test(un) || pw.length < 4) return J({ error: "Username: 3-30 letters/numbers. Password: at least 4 characters." }, 400);
+      const old = await env.DB.get("teacher:" + un, "json");
+      if (old && !body.reset) return J({ error: "That username already exists" }, 409);
+      const salt = rand();
+      await env.DB.put("teacher:" + un, JSON.stringify({ username: un, name: String(body.name || old?.name || un).slice(0, 60), salt, hash: await hashPw(pw, salt) }));
+      return J({ ok: 1 });
+    }
+    if (req.method === "DELETE") { await env.DB.delete("teacher:" + decodeURIComponent(p.split("/").pop())); return J({ ok: 1 }); }
   }
   if (s.role === "admin" && p.startsWith("/api/admin/templates")) {
     const list = (await env.DB.get("templates", "json")) || [];
@@ -63,6 +112,7 @@ async function api(req, env, p) {
     }
     if (req.method === "DELETE") {
       const id = p.split("/").pop();
+      await env.DB.delete("tasks:" + id);
       await env.DB.put("templates", JSON.stringify(list.filter(t => t.id !== id)));
       return J({ ok: 1 });
     }
@@ -76,7 +126,8 @@ async function api(req, env, p) {
       const d = {
         classes: Array.isArray(body.classes) ? body.classes.slice(0, 100) : [],
         assignments: Array.isArray(body.assignments) ? body.assignments.slice(0, 2000) : [],
-        settings: { hpd: Math.min(12, Math.max(0.5, +body.settings?.hpd || 3)) }
+        settings: { hpd: Math.min(12, Math.max(0.5, +body.settings?.hpd || 3)) },
+        tprog: Object.fromEntries(Object.entries(body.tprog && typeof body.tprog === "object" ? body.tprog : {}).slice(0, 2000).map(([k, v]) => [k, { done: !!v?.done, progress: Math.min(100, Math.max(0, +v?.progress || 0)) }]))
       };
       if (JSON.stringify(d).length > 800000) return J({ error: "Too much data" }, 413);
       await env.DB.put(k, JSON.stringify(d));
